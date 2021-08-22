@@ -3,6 +3,12 @@
 // Re-export pallet items so that they can be accessed from the crate namespace.
 pub use pallet::*;
 
+#[cfg(test)]
+mod mock;
+
+#[cfg(test)]
+mod tests;
+
 #[frame_support::pallet]
 pub mod pallet {
     use frame_support::{dispatch::DispatchResultWithPostInfo, pallet_prelude::*};
@@ -14,6 +20,9 @@ pub mod pallet {
     pub trait Config: frame_system::Config {
         /// Because this pallet emits events, it depends on the runtime's definition of an event.
         type Event: From<Event<Self>> + IsType<<Self as frame_system::Config>::Event>;
+
+        #[pallet::constant]
+        type MaxProofHashLength: Get<u16>;
     }
 
     // Pallets use events to inform users when important changes are made.
@@ -41,6 +50,8 @@ pub mod pallet {
         NotProofOwner,
         /// Caller can not transfer the proof to caller self.
         CanNotBeOwner,
+        /// The proof is overlength
+        ProofHashTooLong,
     }
 
     #[pallet::pallet]
@@ -49,7 +60,7 @@ pub mod pallet {
 
     #[pallet::storage]
     pub(super) type Proofs<T: Config> =
-        StorageMap<_, Blake2_128Concat, Vec<u8>, (T::AccountId, T::BlockNumber), ValueQuery>;
+        StorageMap<_, Blake2_128Concat, Vec<u8>, (T::AccountId, T::BlockNumber)>;
 
     #[pallet::hooks]
     impl<T: Config> Hooks<BlockNumberFor<T>> for Pallet<T> {}
@@ -69,6 +80,12 @@ pub mod pallet {
             // https://substrate.dev/docs/en/knowledgebase/runtime/origin
             let sender = ensure_signed(origin)?;
 
+            // Ensure that the proof hash was not overlong
+            ensure!(
+                proof.len() <= T::MaxProofHashLength::get() as usize,
+                Error::<T>::ProofHashTooLong
+            );
+
             // Verify that the specified proof has not already been claimed.
             ensure!(
                 !Proofs::<T>::contains_key(&proof),
@@ -87,7 +104,10 @@ pub mod pallet {
         }
 
         #[pallet::weight(10_000)]
-        fn revoke_claim(origin: OriginFor<T>, proof: Vec<u8>) -> DispatchResultWithPostInfo {
+        pub(super) fn revoke_claim(
+            origin: OriginFor<T>,
+            proof: Vec<u8>,
+        ) -> DispatchResultWithPostInfo {
             // Check that the extrinsic was signed and get the signer.
             // This function will return an error if the extrinsic is not signed.
             // https://substrate.dev/docs/en/knowledgebase/runtime/origin
@@ -97,7 +117,7 @@ pub mod pallet {
             ensure!(Proofs::<T>::contains_key(&proof), Error::<T>::NoSuchProof);
 
             // Get owner of the claim.
-            let (owner, _) = Proofs::<T>::get(&proof);
+            let (owner, _) = Proofs::<T>::get(&proof).unwrap();
 
             // Verify that sender of the current call is the claim owner.
             ensure!(sender == owner, Error::<T>::NotProofOwner);
@@ -126,14 +146,14 @@ pub mod pallet {
             ensure!(Proofs::<T>::contains_key(&proof), Error::<T>::NoSuchProof);
 
             // Get owner of the claim.
-            let (owner, _) = Proofs::<T>::get(&proof);
+            let (owner, _) = Proofs::<T>::get(&proof).unwrap();
 
             // Verify that sender of the current call is the claim owner.
             ensure!(sender == owner, Error::<T>::NotProofOwner);
 
             // 确定转移目标不是自己
             ensure!(sender != target, Error::<T>::CanNotBeOwner);
-            
+
             // Get the block number from the FRAME System module.
             let current_block = <frame_system::Module<T>>::block_number();
 
